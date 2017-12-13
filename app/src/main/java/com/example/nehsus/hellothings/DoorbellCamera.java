@@ -1,13 +1,16 @@
 package com.example.nehsus.hellothings;
-import android.hardware.Camera;
+
 import android.media.ImageReader;
 import android.hardware.camera2.*;
 import android.content.*;
+import java.util.Collections;
 import android.os.Handler;
 import android.util.Log;
 import static android.content.Context.CAMERA_SERVICE;
 import android.graphics.ImageFormat;
 import android.support.annotation.*;
+import android.hardware.camera2.params.StreamConfigurationMap;
+import android.util.Size;
 
 
 /**
@@ -17,17 +20,22 @@ import android.support.annotation.*;
 public class DoorbellCamera {
     private static final String TAG = DoorbellCamera.class.getSimpleName();
 
-    // Camera image parameters (device-specific)
-    private static final int IMAGE_WIDTH = 600;
-    private static final int IMAGE_HEIGHT = 400;
+    private static final int IMAGE_WIDTH = 320;
+    private static final int IMAGE_HEIGHT = 240;
     private static final int MAX_IMAGES = 1;
 
-    // Image result processor
-    private static ImageReader mImageReader;
-    // Active camera device connection
-    private static CameraDevice mCameraDevice;
-    // Active camera capture session
-    private static CameraCaptureSession mCaptureSession;
+    private CameraDevice mCameraDevice;
+
+    private CameraCaptureSession mCaptureSession;
+
+    /**
+     * An {@link ImageReader} that handles still image capture.
+     */
+    private ImageReader mImageReader;
+
+    // Lazy-loaded singleton, so only one instance of the camera is created.
+    private DoorbellCamera() {
+    }
 
     private static class InstanceHolder {
         private static DoorbellCamera mCamera = new DoorbellCamera();
@@ -37,15 +45,15 @@ public class DoorbellCamera {
         return InstanceHolder.mCamera;
     }
 
-    // Initialize a new camera device connection
-    public static void initializeCamera(Context context,
-                                        Handler backgroundHandler,
-                                        ImageReader.OnImageAvailableListener imageAvailableListener) {
-
+    /**
+     * Initialize the camera device
+     */
+    public void initializeCamera(Context context,
+                                 Handler backgroundHandler,
+                                 ImageReader.OnImageAvailableListener imageAvailableListener) {
         // Discover the camera instance
         CameraManager manager = (CameraManager) context.getSystemService(CAMERA_SERVICE);
         String[] camIds = {};
-
         try {
             camIds = manager.getCameraIdList();
         } catch (CameraAccessException e) {
@@ -58,110 +66,177 @@ public class DoorbellCamera {
         String id = camIds[0];
         Log.d(TAG, "Using camera id " + id);
 
-        // Initialize image processor
+        // Initialize the image processor
         mImageReader = ImageReader.newInstance(IMAGE_WIDTH, IMAGE_HEIGHT,
                 ImageFormat.JPEG, MAX_IMAGES);
-        mImageReader.setOnImageAvailableListener(imageAvailableListener, backgroundHandler);
+        mImageReader.setOnImageAvailableListener(
+                imageAvailableListener, backgroundHandler);
 
         // Open the camera resource
         try {
             manager.openCamera(id, mStateCallback, backgroundHandler);
-        } catch (CameraAccessException ayyo) {
-            Log.d(TAG, "Camera access exception", ayyo);
+        } catch (CameraAccessException cae) {
+            Log.d(TAG, "Camera access exception", cae);
         }
     }
 
-    // Callback handling devices state changes
-    public static CameraDevice.StateCallback mStateCallback = new CameraDevice.StateCallback() {
+    /**
+     * Callback handling device state changes
+     */
+    private final CameraDevice.StateCallback mStateCallback = new CameraDevice.StateCallback() {
         @Override
-        public void onOpened(@NonNull CameraDevice cameraDevice) {
+        public void onOpened(CameraDevice cameraDevice) {
             Log.d(TAG, "Opened camera.");
             mCameraDevice = cameraDevice;
         }
 
         @Override
-        public void onDisconnected(@NonNull CameraDevice cameraDevice) {
+        public void onDisconnected(CameraDevice cameraDevice) {
             Log.d(TAG, "Camera disconnected, closing.");
             cameraDevice.close();
         }
 
         @Override
-        public void onError(@NonNull CameraDevice cameraDevice, int i) {
+        public void onError(CameraDevice cameraDevice, int i) {
             Log.d(TAG, "Camera device error, closing.");
             cameraDevice.close();
-            closeCapSesh();
         }
 
         @Override
-        public void onClosed(@NonNull CameraDevice cameraDevice) {
+        public void onClosed(CameraDevice cameraDevice) {
             Log.d(TAG, "Closed camera, releasing");
             mCameraDevice = null;
-            closeCapSesh();
         }
     };
 
-    // Close the camera resources
+    /**
+     * Begin a still image capture
+     */
+    public void takePicture() {
+        if (mCameraDevice == null) {
+            Log.w(TAG, "Cannot capture image. Camera not initialized.");
+            return;
+        }
+
+        // Here, we create a CameraCaptureSession for capturing still images.
+        try {
+            mCameraDevice.createCaptureSession(
+                    Collections.singletonList(mImageReader.getSurface()),
+                    mSessionCallback,
+                    null);
+        } catch (CameraAccessException cae) {
+            Log.d(TAG, "access exception while preparing pic", cae);
+        }
+    }
+
+    /**
+     * Callback handling session state changes
+     */
+    private CameraCaptureSession.StateCallback mSessionCallback =
+            new CameraCaptureSession.StateCallback() {
+                @Override
+                public void onConfigured(CameraCaptureSession cameraCaptureSession) {
+                    // The camera is already closed
+                    if (mCameraDevice == null) {
+                        return;
+                    }
+
+                    // When the session is ready, we start capture.
+                    mCaptureSession = cameraCaptureSession;
+                    triggerImageCapture();
+                }
+
+                @Override
+                public void onConfigureFailed(CameraCaptureSession cameraCaptureSession) {
+                    Log.w(TAG, "Failed to configure camera");
+                }
+            };
+
+    /**
+     * Execute a new capture request within the active session
+     */
+    private void triggerImageCapture() {
+        try {
+            final CaptureRequest.Builder captureBuilder =
+                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            captureBuilder.addTarget(mImageReader.getSurface());
+            captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            Log.d(TAG, "Session initialized.");
+            mCaptureSession.capture(captureBuilder.build(), mCaptureCallback, null);
+        } catch (CameraAccessException cae) {
+            Log.d(TAG, "camera capture exception");
+        }
+    }
+
+    /**
+     * Callback handling capture session events
+     */
+    private final CameraCaptureSession.CaptureCallback mCaptureCallback =
+            new CameraCaptureSession.CaptureCallback() {
+
+                @Override
+                public void onCaptureProgressed(CameraCaptureSession session,
+                                                CaptureRequest request,
+                                                CaptureResult partialResult) {
+                    Log.d(TAG, "Partial result");
+                }
+
+                @Override
+                public void onCaptureCompleted(CameraCaptureSession session,
+                                               CaptureRequest request,
+                                               TotalCaptureResult result) {
+                    if (session != null) {
+                        session.close();
+                        mCaptureSession = null;
+                        Log.d(TAG, "CaptureSession closed");
+                    }
+                }
+            };
+
+
+    /**
+     * Close the camera resources
+     */
     public void shutDown() {
         if (mCameraDevice != null) {
             mCameraDevice.close();
         }
     }
 
-    private static void closeCapSesh() {
-        if (mCaptureSession != null) {
-            try {
-                mCaptureSession.close();
-            } catch (Exception ex) {
-                Log.e(TAG, "Could not close capture session", ex);
-            }
-            mCaptureSession = null;
-        }
-    }
-    private CameraCaptureSession.StateCallback mSessionCallback =
-            new CameraCaptureSession.StateCallback() {
-                @Override
-                public void onConfigured(@NonNull CameraCaptureSession cameraCaptureSession) {
-                    // The camera is already closed
-                    if (mCameraDevice == null) {
-                        return;
-                    }
-                    // When the session is ready, we start capture.
-                    mCaptureSession = cameraCaptureSession;
-                    triggerImg();
-                }
-                @Override
-                public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
-                    Log.w(TAG, "Failed to configure camera");
-                }
-            };
-    private void triggerImg() {
+    /**
+     * Helpful debugging method:  Dump all supported camera formats to log.  You don't need to run
+     * this for normal operation, but it's very helpful when porting this code to different
+     * hardware.
+     */
+    public static void dumpFormatInfo(Context context) {
+        CameraManager manager = (CameraManager) context.getSystemService(CAMERA_SERVICE);
+        String[] camIds = {};
         try {
-            final CaptureRequest.Builder captureBuilder =
-                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureBuilder.addTarget(mImageReader.getSurface());
-            captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-            Log.d(TAG, "Capture request created.");
-            mCaptureSession.capture(captureBuilder.build(), mCaptureCallback, null);
-        } catch (CameraAccessException cae) {
-            Log.d(TAG, "camera capture exception");
+            camIds = manager.getCameraIdList();
+        } catch (CameraAccessException e) {
+            Log.d(TAG, "Cam access exception getting IDs");
+        }
+        if (camIds.length < 1) {
+            Log.d(TAG, "No cameras found");
+        }
+        String id = camIds[0];
+        Log.d(TAG, "Using camera id " + id);
+        try {
+            CameraCharacteristics characteristics = manager.getCameraCharacteristics(id);
+            StreamConfigurationMap configs = characteristics.get(
+                    CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            for (int format : configs.getOutputFormats()) {
+                Log.d(TAG, "Getting sizes for format: " + format);
+                for (Size s : configs.getOutputSizes(format)) {
+                    Log.d(TAG, "\t" + s.toString());
+                }
+            }
+            int[] effects = characteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_EFFECTS);
+            for (int effect : effects) {
+                Log.d(TAG, "Effect available: " + effect);
+            }
+        } catch (CameraAccessException e) {
+            Log.d(TAG, "Cam access exception getting characteristics.");
         }
     }
-    private final CameraCaptureSession.CaptureCallback mCaptureCallback =
-            new CameraCaptureSession.CaptureCallback() {
-                @Override
-                public void onCaptureProgressed(@NonNull CameraCaptureSession session,
-                                                @NonNull CaptureRequest request,
-                                                @NonNull CaptureResult partialResult) {
-                    Log.d(TAG, "Partial result");
-                }
-                @Override
-                public void onCaptureCompleted(@NonNull CameraCaptureSession session,
-                                               @NonNull CaptureRequest request,
-                                               @NonNull TotalCaptureResult result) {
-                    session.close();
-                    mCaptureSession = null;
-                    Log.d(TAG, "CaptureSession closed");
-                }
-            };
-
 }

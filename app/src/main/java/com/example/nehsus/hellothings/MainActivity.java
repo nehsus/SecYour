@@ -1,80 +1,114 @@
 package com.example.nehsus.hellothings;
 
-import android.media.ImageReader;
-import android.media.Image;
+import android.Manifest;
 import android.app.Activity;
-import android.os.*;
-import android.util.*;
-import android.hardware.*;
-import android.os.Bundle;
-import com.google.android.things.pio.PeripheralManagerService;
+import android.content.pm.PackageManager;
+import android.media.Image;
+import android.media.ImageReader;
+
+import android.os.HandlerThread;
+import android.util.Log;
+import android.view.KeyEvent;
 import java.nio.ByteBuffer;
+import android.os.Bundle;
+import android.os.Handler;
 
 
 /**
- Nehsus 2017
+ * Nehsus 2017
  **/
 public class MainActivity extends Activity {
-    private final String TAG = MainActivity.class.getSimpleName();
+    private DoorbellCamera mCamera;
+    private static final String TAG = MainActivity.class.getSimpleName();
 
-    private Handler deviceHandler = new Handler();
 
-    private DoorbellCamera camera;
-    private Handler cameraHandler;
-    private HandlerThread cameraThread;
-    private SensorManager sensorManager;
+    /*
+     * Driver for the doorbell button;
+     */
+    //private ButtonInputDriver mButtonInputDriver;
+
+    /**
+     * A {@link Handler} for running Camera tasks in the background.
+     */
+    private Handler mCameraHandler;
+
+    /**
+     * An additional thread for running Camera tasks that shouldn't block the UI.
+     */
+    private HandlerThread mCameraThread;
+
+    /**
+     * A {@link Handler} for running Cloud tasks in the background.
+     */
+    private Handler mCloudHandler;
+
+    /**
+     * An additional thread for running Cloud tasks that shouldn't block the UI.
+     */
+    private HandlerThread mCloudThread;
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        Log.d(TAG, "Doorbell Activity created.");
 
-        Log.d(TAG, "onCreate");
+        // We need permission to access the camera
+        if (checkSelfPermission(Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+            // A problem occurred auto-granting the permission
+            Log.d(TAG, "No permission");
+            return;
+        }
 
+        // Creates new handlers and associated threads for camera and networking operations.
+        mCameraThread = new HandlerThread("CameraBackground");
+        mCameraThread.start();
+        mCameraHandler = new Handler(mCameraThread.getLooper());
 
-        PeripheralManagerService service = new PeripheralManagerService();
+        mCloudThread = new HandlerThread("CloudThread");
+        mCloudThread.start();
+        mCloudHandler = new Handler(mCloudThread.getLooper());
 
-        initialize();
+        // Initialize the doorbell button driver
+        // Camera code is complicated, so we've shoved it all in this closet class for you.
+        mCamera = DoorbellCamera.getInstance();
+        mCamera.initializeCamera(this, mCameraHandler, mOnImageAvailableListener);
     }
 
-    private void initialize() {
-        Log.d(TAG, "initialize() start...");
-
-        configCamera();
-
-        Log.d(TAG, "initialize() done...");
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        mCamera.shutDown();
     }
-    private void configCamera() {
-        Log.d(TAG, "configCamera() start...");
 
-        camera = camera.getInstance();
-        cameraThread = new HandlerThread("CameraThread");
-        cameraThread.start();
-        cameraHandler = new Handler(cameraThread.getLooper());
-        DoorbellCamera.initializeCamera(this, cameraHandler, imageAvailableListener);
-
-        Log.d(TAG, "configCamera() done...");
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_ENTER) {
+            // Doorbell rang!
+            Log.d(TAG, "button pressed");
+            mCamera.takePicture();
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
     }
-    private ImageReader.OnImageAvailableListener imageAvailableListener =
+
+    /**
+     * Listener for new camera images.
+     */
+    private ImageReader.OnImageAvailableListener mOnImageAvailableListener =
             new ImageReader.OnImageAvailableListener() {
                 @Override
                 public void onImageAvailable(ImageReader reader) {
-                    Log.d(TAG, "onImageAvailable()");
-
                     Image image = reader.acquireLatestImage();
+                    // get image bytes
                     ByteBuffer imageBuf = image.getPlanes()[0].getBuffer();
                     final byte[] imageBytes = new byte[imageBuf.remaining()];
                     imageBuf.get(imageBytes);
                     image.close();
-
-                    savePicture(imageBytes);
                 }
             };
-    private void savePicture(final byte[] imageBytes) {
-        if (imageBytes != null) {
-            Log.d(TAG, "savePicture()");
 
-            String imageStr = Base64.encodeToString(
-                    imageBytes, Base64.NO_WRAP | Base64.URL_SAFE);
-                }
-            }
-        }
+    /**
+     * Handle image processing in Firebase and Cloud Vision.
+     */
+}
